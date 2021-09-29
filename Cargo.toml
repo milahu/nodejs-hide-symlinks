@@ -1,0 +1,15 @@
+[package]
+name = "nodejs-hide-symlinks"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+name = "nodejs_hide_symlinks"
+crate_type = ["cdylib"]
+
+[dependencies]
+redhook = "*"
+libc = "*"
+#syscall = { git = "https://github.com/aaronjeline/syscall.rs" }
+lazy_static = "*"
+colored = "*"
