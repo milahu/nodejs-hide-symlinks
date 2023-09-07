@@ -4,7 +4,7 @@ nodejs-hide-symlinks
 hide symlinks from nodejs
 to implement a symlinked machine-level global NPM store on nixos (and others)
 
-license: CC0-1.0, author: milahu
+license: MIT, author: milahu
 
 based on
 https://github.com/nodejs/node/blob/master/deps/uv/src/unix/linux-syscalls.c # uv__statx
