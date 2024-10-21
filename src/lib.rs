@@ -6,6 +6,7 @@ extern crate redhook;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::env;
+use std::slice;
 
 unsafe fn is_symlink(statxbuf: *const libc::statx) -> bool {
     // https://man7.org/linux/man-pages/man7/inode.7.html
@@ -27,6 +28,22 @@ unsafe fn str_of_chars_len(cstr: *const libc::c_char, clen: libc::ssize_t) -> &'
 
 unsafe fn string_of_statxbuf(statxbuf: *const libc::statx) -> String {
     return format!("{{ stx_ino: {}, stx_mode: {:#o}, is_symlink: {:?} }}", (*statxbuf).stx_ino, (*statxbuf).stx_mode, is_symlink(statxbuf));
+}
+
+unsafe fn str_to_c_char_buf(
+    src_str: &str,
+    buf: *mut libc::c_char,
+    bufsz: libc::size_t
+) -> libc::size_t {
+    // write string to buffer
+    // https://stackoverflow.com/questions/51320714
+    let src_string = String::from(src_str);
+    let src_cstring = CString::new(src_string).unwrap();
+    //let src_bytes = src_cstring.as_bytes_with_nul();
+    let src_bytes = src_cstring.as_bytes();
+    let buf_bytes = slice::from_raw_parts_mut(buf as *mut u8, bufsz as usize);
+    buf_bytes[..src_bytes.len()].copy_from_slice(src_bytes);
+    return src_bytes.len() as libc::size_t;
 }
 
 hook! {
@@ -109,6 +126,10 @@ hook! {
         bufsz: libc::size_t
     ) -> libc::ssize_t => readlink_hooked {
         let mut retval = real!(readlink)(path, buf, bufsz);
+        if true {
+            // modify result
+            return str_to_c_char_buf("/asdf", buf, bufsz) as libc::ssize_t;
+        }
         println!("hooking syscall readlink(\"{}\", &buf, bufsz) -> retval: {:?}, buf: {}", str_of_chars(path), retval, str_of_chars_len(buf, retval));
         return retval;
     }
