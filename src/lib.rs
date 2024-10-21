@@ -48,7 +48,9 @@ lazy_static::lazy_static! {
         return state_locked;
     };
 
-    static ref DEBUG: bool = env::var("NODEJS_HIDE_SYMLINKS_DEBUG").is_ok();
+    // TODO restore
+    //static ref DEBUG: bool = env::var("NODEJS_HIDE_SYMLINKS_DEBUG").is_ok();
+    static ref DEBUG: bool = true;
 }
 
 
@@ -62,7 +64,27 @@ unsafe fn is_symlink(statxbuf: *const libc::statx) -> bool {
 
 
 
+/*
+            // todo? simplify cast from libc::ssize_t to libc::c_long
+
+            //return statx_hooked(dirfd, path, flags, mask, statxbuf).into();
+            return statx_hooked(dirfd, path, flags, mask, statxbuf) as libc::c_long;
+
+            // error: the trait `From<isize>` is not implemented for `i64`, which is required by `isize: Into<_>`
+            //return readlink_hooked(path, buf, bufsz).into();
+            // error: expected `i64`, found `isize`
+            //return readlink_hooked(path, buf, bufsz);
+            // error: type annotations needed
+            //return readlink_hooked(path, buf, bufsz).into() as libc::c_long;
+            // the trait `From<isize>` is not implemented for `i64`, which is required by `isize: Into<i64>`
+            //return <libc::ssize_t as Into<libc::c_long>>::into(readlink_hooked(path, buf, bufsz).into());
+            return readlink_hooked(path, buf, bufsz) as libc::c_long;
+*/
+
+
+
 hook! {
+    // https://docs.rs/libc/latest/libc/fn.syscall.html
     unsafe fn syscall(
         num: libc::c_long,
         a1: *mut libc::c_void,
@@ -72,19 +94,37 @@ hook! {
         a5: *mut libc::c_void
     ) -> libc::c_long => my_syscall {
 
-        // TODO handle libc::SYS_chdir
-        if num != libc::SYS_statx {
-            //println!("ignore syscall {}", num);
-            return real!(syscall)(num, a1, a2, a3, a4, a5);
+        if num == libc::SYS_statx {
+            println!("hooking syscall {}", num);
+            let dirfd = a1 as libc::c_int;
+            let path = a2 as *const libc::c_char;
+            let flags = a3 as libc::c_int;
+            let mask = a4 as libc::c_uint;
+            let statxbuf = a5 as *mut libc::statx;
+            return statx_hooked(dirfd, path, flags, mask, statxbuf) as libc::c_long;
         }
 
-        let dirfd = a1 as libc::c_int;
-        let path = a2 as *const libc::c_char;
-        let flags = a3 as libc::c_int;
-        let mask = a4 as libc::c_uint;
-        let statxbuf = a5 as *mut libc::statx;
+        if num == libc::SYS_readlink {
+            println!("hooking syscall {}", num);
+            let path = a1 as *const libc::c_char;
+            let buf = a2 as *mut libc::c_char;
+            let bufsz = a3 as libc::size_t;
+            return readlink_hooked(path, buf, bufsz) as libc::c_long;
+        }
 
-        return statx_hooked(dirfd, path, flags, mask, statxbuf).into();
+        if num == libc::SYS_readlinkat {
+            println!("hooking syscall {}", num);
+            let dirfd = a1 as libc::c_int;
+            let pathname = a2 as *const libc::c_char;
+            let buf = a3 as *mut libc::c_char;
+            let bufsz = a4 as libc::size_t;
+            return readlinkat_hooked(dirfd, pathname, buf, bufsz) as libc::c_long;
+        }
+
+        // TODO handle libc::SYS_chdir
+
+        println!("ignoring syscall {}", num);
+        return real!(syscall)(num, a1, a2, a3, a4, a5);
     }
 }
 
@@ -128,7 +168,11 @@ hook! {
     ) -> libc::c_int => my_open {
 
         let path_str = str_of_chars(path);
-        
+
+        if *DEBUG {
+            eprintln!("nodejs-hide-symlinks open(\"{}\", {})", path_str, oflag);
+        }
+
         /*
         let symlink_map_mutex = Arc::clone(&SYMLINK_MAP);
         let symlink_map = symlink_map_mutex.lock().unwrap();
@@ -164,9 +208,10 @@ hook! {
         // TODO use state.cwd
         let cwd_str = std::env::current_dir().unwrap().into_os_string().into_string().unwrap(); // pathbuf to string
         if *DEBUG {
-            eprintln!("nodejs-hide-symlinks wrong cwd   \"{}\"", cwd_str);
-            eprintln!("nodejs-hide-symlinks path_prefix \"{}\"", path_prefix);
-            eprintln!("nodejs-hide-symlinks path        \"{}\"", path_str);
+            //eprintln!("nodejs-hide-symlinks open(\"{}\", {})", path_str, oflag);
+            eprintln!("nodejs-hide-symlinks open: wrong cwd   \"{}\"", cwd_str);
+            eprintln!("nodejs-hide-symlinks open: path_prefix \"{}\"", path_prefix);
+            eprintln!("nodejs-hide-symlinks open: path        \"{}\"", path_str);
             /*
             // FIXME thread '<unnamed>' panicked at 'byte index 51 is out of bounds of `/home/user/src/milahu/nur-packages/result`', src/lib.rs:187:27
             let prefix_rel = &path_prefix[(cwd_str.len() + 1)..];
@@ -212,6 +257,14 @@ hook! {
     ) -> libc::c_int => statx_hooked {
 
         let mut retval = real!(statx)(dirfd, path, flags, mask, statxbuf);
+
+        if *DEBUG {
+            //println!("nodejs-hide-symlinks syscall(SYS_statx, dir {}, path {}, flags {}, mask {}) -> retval {:?}", dirfd, path_str, flags, mask, retval);
+            //println!("nodejs-hide-symlinks statx -> stx_mode: {:#o}, symlink: {:?}", (*statxbuf).stx_mode, is_symlink(statxbuf));
+            let path_str = str_of_chars(path);
+            let statxbuf_str = string_of_statxbuf(statxbuf);
+            eprintln!("nodejs-hide-symlinks a: statx({}, \"{}\", {}, {}, &statxbuf) -> retval: {:?}, statxbuf: {}", dirfd, path_str, flags, mask, retval, statxbuf_str);
+        }
 
         if !(flags == 256 && is_symlink(statxbuf)) {
             // only with flags == 256, symlinks are detected
@@ -305,6 +358,9 @@ hook! {
         preload_state.map.insert(path_str.to_owned(), path_resolved_str.to_owned());
         drop(preload_state); // unlock early
 
+        // preserve the inode number
+        let stx_ino = (*statxbuf).stx_ino;
+
         // overwrite statxbuf
         *statxbuf = std::mem::zeroed();
         //retval = real!(statx)(dirfd, path_resolved, flags, mask, statxbuf) as libc::c_long;
@@ -313,14 +369,86 @@ hook! {
         //println!("statx({}) retval: {}", path_resolved_str, retval);
         //println!("statx({}) stx_mode: {:#o}", path_resolved_str, (*statxbuf).stx_mode);
 
+        // TODO remove
+        // restore the inode number
+        (*statxbuf).stx_ino = stx_ino;
+
         if *DEBUG {
             //let retval = real!(statx)(dirfd, path, flags, mask, statxbuf);
             //let path_str = str_of_chars(path);
             let path_resolved_str = str_of_chars(path_resolved);
             let statxbuf_str = string_of_statxbuf(statxbuf);
             eprintln!("nodejs-hide-symlinks b: statx({}, \"{}\", {}, {}, &statxbuf) -> retval: {:?}, statxbuf: {}", dirfd, path_resolved_str, flags, mask, retval, statxbuf_str);
+            //eprintln!("nodejs-hide-symlinks hiding {}", path_resolved_str);
             //println!("statx() stx_mode: {:#o}", (*statxbuf).stx_mode);
         }
+
+        return retval;
+    }
+}
+
+
+
+// "npx vite" seems to bypass statx and call readlink directly
+
+hook! {
+    // https://docs.rs/libc/latest/libc/fn.readlink.html
+    unsafe fn readlink(
+        path: *const libc::c_char,
+        buf: *mut libc::c_char,
+        bufsz: libc::size_t
+    ) -> libc::ssize_t => readlink_hooked {
+        let mut retval = real!(readlink)(path, buf, bufsz);
+
+        if *DEBUG {
+            eprintln!("nodejs-hide-symlinks a: readlink(\"{}\", &buf, bufsz) -> retval: {:?}, buf: {}", str_of_chars(path), retval, str_of_chars(buf));
+        }
+
+        // TODO modify retval and *buf
+
+        return retval;
+    }
+}
+
+
+
+hook! {
+    // https://docs.rs/libc/latest/libc/fn.readlinkat.html
+    unsafe fn readlinkat(
+        dirfd: libc::c_int,
+        pathname: *const libc::c_char,
+        buf: *mut libc::c_char,
+        bufsz: libc::size_t
+    ) -> libc::ssize_t => readlinkat_hooked {
+        let mut retval = real!(readlinkat)(dirfd, pathname, buf, bufsz);
+
+        if *DEBUG {
+            eprintln!("nodejs-hide-symlinks a: readlinkat({}, \"{}\", &buf, bufsz) -> retval: {:?}, buf: {}", dirfd, str_of_chars(pathname), retval, str_of_chars(buf));
+        }
+
+        // TODO modify retval and *buf
+
+        return retval;
+    }
+}
+
+
+
+// debug
+hook! {
+    // https://docs.rs/libc/latest/libc/fn.openat.html
+    unsafe fn openat(
+        dirfd: libc::c_int,
+        pathname: *const libc::c_char,
+        flags: libc::c_int
+    ) -> libc::c_int => openat_hooked {
+        let mut retval = real!(openat)(dirfd, pathname, flags);
+
+        if *DEBUG {
+            eprintln!("nodejs-hide-symlinks a: openat({}, \"{}\", {}) -> retval: {:?}", dirfd, str_of_chars(pathname), flags, retval);
+        }
+
+        // TODO modify retval
 
         return retval;
     }
